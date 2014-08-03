@@ -467,7 +467,7 @@ class ExtensionField(Field):
         return '#define %-40s %d\n' % (identifier, self.tag)
 
     def extension_decl(self):
-        '''Declaration of the extension type in the .pb.h file'''
+        '''Declaration of the extension type in the .pb.hpp file'''
         if self.skip:
             msg = '/* Extension field %s was skipped because only "optional"\n' % self.fullname
             msg +='   type of extension fields is currently supported. */\n'
@@ -476,7 +476,7 @@ class ExtensionField(Field):
         return 'extern const pb_extension_type_t %s;\n' % self.fullname
 
     def extension_def(self):
-        '''Definition of the extension type in the .pb.c file'''
+        '''Definition of the extension type in the .pb.cpp file'''
 
         if self.skip:
             return ''
@@ -716,7 +716,7 @@ def generate_header(dependencies, headername, enums, messages, extensions, optio
     yield '#ifndef _PB_%s_\n' % symbol
     yield '#define _PB_%s_\n' % symbol
     try:
-        yield options.libformat % ('pb.h')
+        yield options.libformat % ('pb.hpp')
     except TypeError:
         # no %s specified - use whatever was passed in as options.libformat
         yield options.libformat
@@ -838,7 +838,7 @@ def generate_source(headername, enums, messages, extensions, options):
                 assertion = ' && '.join(str(c) + ' < 65536' for c in checks)
                 msgs = '_'.join(str(n) for n in checks_msgnames)
                 yield '/* If you get an error here, it means that you need to define PB_FIELD_32BIT\n'
-                yield ' * compile-time option. You can do that in pb.h or on compiler command line.\n'
+                yield ' * compile-time option. You can do that in pb.hpp or on compiler command line.\n'
                 yield ' * \n'
                 yield ' * The reason you need to do this is that some of your messages contain tag\n'
                 yield ' * numbers or field sizes that are larger than what can fit in 8 or 16 bit\n'
@@ -855,7 +855,7 @@ def generate_source(headername, enums, messages, extensions, options):
                 assertion = ' && '.join(str(c) + ' < 256' for c in checks)
                 msgs = '_'.join(str(n) for n in checks_msgnames)
                 yield '/* If you get an error here, it means that you need to define PB_FIELD_16BIT\n'
-                yield ' * compile-time option. You can do that in pb.h or on compiler command line.\n'
+                yield ' * compile-time option. You can do that in pb.hpp or on compiler command line.\n'
                 yield ' * \n'
                 yield ' * The reason you need to do this is that some of your messages contain tag\n'
                 yield ' * numbers or field sizes that are larger than what can fit in the default\n'
@@ -956,7 +956,7 @@ from optparse import OptionParser
 optparser = OptionParser(
     usage = "Usage: nanopb_generator.py [options] file.pb ...",
     epilog = "Compile file.pb from file.proto by: 'protoc -ofile.pb file.proto'. " +
-             "Output will be written to file.pb.h and file.pb.c.")
+             "Output will be written to file.pb.hpp and file.pb.cpp.")
 optparser.add_option("-x", dest="exclude", metavar="FILE", action="append", default=[],
     help="Exclude file from generated #include list.")
 optparser.add_option("-e", "--extension", dest="extension", metavar="EXTENSION", default="pb",
@@ -965,12 +965,12 @@ optparser.add_option("-f", "--options-file", dest="options_file", metavar="FILE"
     help="Set name of a separate generator options file.")
 optparser.add_option("-Q", "--generated-include-format", dest="genformat",
     metavar="FORMAT", default='#include "%s"\n',
-    help="Set format string to use for including other .pb.h files. [default: %default]")
+    help="Set format string to use for including other .pb.hpp files. [default: %default]")
 optparser.add_option("-L", "--library-include-format", dest="libformat",
     metavar="FORMAT", default='#include <%s>\n',
-    help="Set format string to use for including the nanopb pb.h header. [default: %default]")
+    help="Set format string to use for including the nanopb pb.hpp header. [default: %default]")
 optparser.add_option("-T", "--no-timestamp", dest="notimestamp", action="store_true", default=False,
-    help="Don't add timestamp to .pb.h and .pb.c preambles")
+    help="Don't add timestamp to .pb.hpp and .pb.cpp preambles")
 optparser.add_option("-q", "--quiet", dest="quiet", action="store_true", default=False,
     help="Don't print anything except errors.")
 optparser.add_option("-v", "--verbose", dest="verbose", action="store_true", default=False,
@@ -986,9 +986,9 @@ def process_file(filename, fdesc, options):
     
     Returns a dict:
         {'headername': Name of header file,
-         'headerdata': Data for the .h header file,
+         'headerdata': Data for the .hpp header file,
          'sourcename': Name of the source code file,
-         'sourcedata': Data for the .c source code file
+         'sourcedata': Data for the .cpp source code file
         }
     '''
     toplevel_options = nanopb_pb2.NanoPBOptions()
@@ -1021,11 +1021,11 @@ def process_file(filename, fdesc, options):
     
     # Decide the file names
     noext = os.path.splitext(filename)[0]
-    headername = noext + '.' + options.extension + '.h'
-    sourcename = noext + '.' + options.extension + '.c'
+    headername = noext + '.' + options.extension + '.hpp'
+    sourcename = noext + '.' + options.extension + '.cpp'
     headerbasename = os.path.basename(headername)
     
-    # List of .proto files that should not be included in the C header file
+    # List of .proto files that should not be included in the C++ header file
     # even if they are mentioned in the source .proto.
     excludes = ['nanopb.proto', 'google/protobuf/descriptor.proto'] + options.exclude
     dependencies = [d for d in fdesc.dependency if d not in excludes]
