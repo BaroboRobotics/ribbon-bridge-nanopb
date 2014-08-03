@@ -63,14 +63,14 @@ datatypes = {
 }
 
 class Names:
-    '''Keeps a set of nested names and formats them to C identifier.'''
+    '''Keeps a set of nested names and formats them to C++ scoped identifier.'''
     def __init__(self, parts = ()):
         if isinstance(parts, Names):
             parts = parts.parts
         self.parts = tuple(parts)
     
     def __str__(self):
-        return '_'.join(self.parts)
+        return '::'.join(self.parts)
 
     def __add__(self, other):
         if isinstance(other, (str, unicode)):
@@ -139,23 +139,17 @@ class EncodedSize:
             return 2**32 - 1
 
 class Enum:
-    def __init__(self, names, desc, enum_options):
+    def __init__(self, desc, enum_options):
         '''desc is EnumDescriptorProto'''
         
         self.options = enum_options
-        self.names = names + desc.name
-        
-        if enum_options.long_names:
-            self.values = [(self.names + x.name, x.number) for x in desc.value]            
-        else:
-            self.values = [(names + x.name, x.number) for x in desc.value] 
-        
-        self.value_longnames = [self.names + x.name for x in desc.value]
+        self.name = desc.name
+        self.values = [(x.name, x.number) for x in desc.value]            
     
     def __str__(self):
-        result = 'typedef enum _%s {\n' % self.names
+        result = 'enum class %s {\n' % self.name
         result += ',\n'.join(["    %s = %d" % x for x in self.values])
-        result += '\n} %s;' % self.names
+        result += '\n};'
         return result
 
 class Field:
@@ -503,7 +497,12 @@ class Message:
     def __init__(self, names, desc, message_options):
         self.name = names
         self.fields = []
-        
+        self.enums = []
+
+        for enum in desc.enum_type:
+            enum_options = get_nanopb_suboptions(enum, message_options, names + enum.name)
+            self.enums.append(Enum(enum, enum_options))
+
         for f in desc.field:
             field_options = get_nanopb_suboptions(f, message_options, self.name + f.name)
             if field_options.type != nanopb_pb2.FT_IGNORE:
@@ -635,28 +634,16 @@ def parse_file(fdesc, file_options):
     
     for enum in fdesc.enum_type:
         enum_options = get_nanopb_suboptions(enum, file_options, base_name + enum.name)
-        enums.append(Enum(base_name, enum, enum_options))
+        enums.append(Enum(enum, enum_options))
     
     for names, message in iterate_messages(fdesc, base_name):
         message_options = get_nanopb_suboptions(message, file_options, names)
         messages.append(Message(names, message, message_options))
-        for enum in message.enum_type:
-            enum_options = get_nanopb_suboptions(enum, message_options, names + enum.name)
-            enums.append(Enum(names, enum, enum_options))
     
     for names, extension in iterate_extensions(fdesc, base_name):
         field_options = get_nanopb_suboptions(extension, file_options, names)
         if field_options.type != nanopb_pb2.FT_IGNORE:
             extensions.append(ExtensionField(names, extension, field_options))
-    
-    # Fix field default values where enum short names are used.
-    for enum in enums:
-        if not enum.options.long_names:
-            for message in messages:
-                for field in message.fields:
-                    if field.default in enum.value_longnames:
-                        idx = enum.value_longnames.index(field.default)
-                        field.default = enum.values[idx][0]
     
     return enums, messages, extensions
 
@@ -701,7 +688,8 @@ def make_identifier(headername):
             result += '_'
     return result
 
-def generate_header(dependencies, headername, enums, messages, extensions, options):
+def generate_header(dependencies, headername, enums, messages, extensions,
+        namespaces, options):
     '''Generate content for a header file.
     Generates strings, which should be concatenated and stored to file.
     '''
@@ -727,13 +715,15 @@ def generate_header(dependencies, headername, enums, messages, extensions, optio
         yield options.genformat % (noext + '.' + options.extension + '.h')
         yield '\n'
 
-    yield '#ifdef __cplusplus\n'
-    yield 'extern "C" {\n'
-    yield '#endif\n\n'
+    for name in namespaces:
+        yield 'namespace %s {\n' % name
     
     yield '/* Enum definitions */\n'
     for enum in enums:
         yield str(enum) + '\n\n'
+    
+    for name in namespaces:
+        yield '} // namespace %s\n' % name
     
     yield '/* Struct definitions */\n'
     for msg in sort_dependencies(messages):
@@ -1030,8 +1020,10 @@ def process_file(filename, fdesc, options):
     excludes = ['nanopb.proto', 'google/protobuf/descriptor.proto'] + options.exclude
     dependencies = [d for d in fdesc.dependency if d not in excludes]
     
+    namespaces = [] if not fdesc.package else fdesc.package.split('.')
+    
     headerdata = ''.join(generate_header(dependencies, headerbasename, enums,
-                                         messages, extensions, options))
+                                         messages, extensions, namespaces, options))
 
     sourcedata = ''.join(generate_source(headerbasename, enums,
                                          messages, extensions, options))
