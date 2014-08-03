@@ -28,6 +28,7 @@ except:
 try:
     import proto.nanopb_pb2 as nanopb_pb2
     import proto.plugin_pb2 as plugin_pb2
+    import proto.interface_pb2 as interface_pb2
 except:
     sys.stderr.write('''
          ********************************************************************
@@ -900,6 +901,18 @@ class Globals:
     separate_options = []
     matched_namemasks = set()
 
+def get_interface_options(desc, name):
+    if isinstance(desc.options, descriptor.FileOptions):
+        ext_type = interface_pb2.interface
+        if desc.options.HasExtension(ext_type):
+            interface_options = desc.options.Extensions[ext_type]
+            if Globals.verbose_options:
+                dotname = '.'.join(name.parts)
+                sys.stderr.write("Options for " + dotname + ": ")
+                sys.stderr.write(text_format.MessageToString(interface_options) + "\n")
+            return interface_options
+    return None
+
 def get_nanopb_suboptions(subdesc, options, name):
     '''Get copy of options, and merge information from subdesc.'''
     new_options = nanopb_pb2.NanoPBOptions()
@@ -1007,6 +1020,7 @@ def process_file(filename, fdesc, options):
     
     # Parse the file
     file_options = get_nanopb_suboptions(fdesc, toplevel_options, Names([filename]))
+    interface_options = get_interface_options(fdesc, Names([filename]))
     enums, messages, extensions = parse_file(fdesc, file_options)
     
     # Decide the file names
@@ -1017,7 +1031,7 @@ def process_file(filename, fdesc, options):
     
     # List of .proto files that should not be included in the C++ header file
     # even if they are mentioned in the source .proto.
-    excludes = ['nanopb.proto', 'google/protobuf/descriptor.proto'] + options.exclude
+    excludes = ['nanopb.proto', 'interface.proto', 'google/protobuf/descriptor.proto'] + options.exclude
     dependencies = [d for d in fdesc.dependency if d not in excludes]
     
     namespaces = [] if not fdesc.package else fdesc.package.split('.')

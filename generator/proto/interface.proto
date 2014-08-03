@@ -1,0 +1,15 @@
+import "google/protobuf/descriptor.proto";
+
+message VersionTriplet {
+    optional uint32 major = 1;
+    optional uint32 minor = 2;
+    optional uint32 patch = 3;
+}
+
+message RpcOptions {
+    optional VersionTriplet version = 1;
+}
+
+extend google.protobuf.FileOptions {
+    optional RpcOptions interface = 50000;
+}
