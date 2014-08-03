@@ -1021,6 +1021,12 @@ def process_file(filename, fdesc, options):
     # Parse the file
     file_options = get_nanopb_suboptions(fdesc, toplevel_options, Names([filename]))
     interface_options = get_interface_options(fdesc, Names([filename]))
+    if not interface_options:
+        sys.stderr.write(
+                'You must specify interface options in %s, like this:\n' % filename
+                + 'option (interface).version = { major: 1 minor: 2 patch: 3 }\n')
+        sys.exit(1)
+
     enums, messages, extensions = parse_file(fdesc, file_options)
     
     # Decide the file names
