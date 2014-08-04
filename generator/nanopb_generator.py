@@ -63,6 +63,12 @@ datatypes = {
     FieldD.TYPE_UINT64:     ('uint64_t', 'UINT64',     10)
 }
 
+def indent(lines, amount, ch=' '):
+    padding = amount * ch
+    return padding + ('\n' + padding).join(lines.split('\n'))
+
+INDENT_AMOUNT = 4
+
 class Names:
     '''Keeps a set of nested names and formats them to C++ scoped identifier.'''
     def __init__(self, parts = ()):
@@ -238,7 +244,7 @@ class Field:
         elif desc.type == FieldD.TYPE_BYTES:
             self.pbtype = 'BYTES'
             if self.allocation == 'STATIC':
-                self.ctype = self.struct_name + self.name + 't'
+                self.ctype = 'nanopb::Bytes<%d>' % self.max_size
                 self.enc_size = varint_max_size(self.max_size) + self.max_size
             elif self.allocation == 'POINTER':
                 self.ctype = 'pb_bytes_array_t'
@@ -260,7 +266,7 @@ class Field:
             
             if self.pbtype == 'MESSAGE':
                 # Use struct definition, so recursive submessages are possible
-                result += '    struct _%s *%s;' % (self.ctype, self.name)
+                result += '    %s *%s;' % (self.ctype, self.name)
             elif self.rules == 'REPEATED' and self.pbtype in ['STRING', 'BYTES']:
                 # String/bytes arrays need to be defined as pointers to pointers
                 result += '    %s **%s;' % (self.ctype, self.name)
@@ -274,17 +280,6 @@ class Field:
             elif self.rules == 'REPEATED' and self.allocation == 'STATIC':
                 result += '    size_t ' + self.name + '_count;\n'
             result += '    %s %s%s;' % (self.ctype, self.name, self.array_decl)
-        return result
-    
-    def types(self):
-        '''Return definitions for any special types this field might need.'''
-        if self.pbtype == 'BYTES' and self.allocation == 'STATIC':
-            result = 'typedef struct {\n'
-            result += '    size_t size;\n'
-            result += '    uint8_t bytes[%d];\n' % self.max_size
-            result += '} %s;\n' % self.ctype
-        else:
-            result = None
         return result
     
     def default_decl(self, declaration_only = False):
@@ -432,9 +427,6 @@ class ExtensionRange(Field):
     def __str__(self):
         return '    pb_extension_t *extensions;'
     
-    def types(self):
-        return None
-    
     def tags(self):
         return ''
         
@@ -496,16 +488,22 @@ class ExtensionField(Field):
 
 class Message:
     def __init__(self, names, desc, message_options):
-        self.name = names
-        self.fields = []
+        self.name = desc.name
         self.enums = []
+        self.messages = []
+        self.fields = []
 
         for enum in desc.enum_type:
             enum_options = get_nanopb_suboptions(enum, message_options, names + enum.name)
             self.enums.append(Enum(enum, enum_options))
 
+        for message in desc.nested_type:
+            submsg_names = names + message.name
+            submsg_options = get_nanopb_suboptions(message, message_options, submsg_names)
+            self.messages.append(Message(submsg_names, message, submsg_options))
+
         for f in desc.field:
-            field_options = get_nanopb_suboptions(f, message_options, self.name + f.name)
+            field_options = get_nanopb_suboptions(f, message_options, names + f.name)
             if field_options.type != nanopb_pb2.FT_IGNORE:
                 self.fields.append(Field(self.name, f, field_options))
         
@@ -524,7 +522,13 @@ class Message:
         return [str(field.ctype) for field in self.fields]
     
     def __str__(self):
-        result = 'typedef struct _%s {\n' % self.name
+        result = 'struct %s {\n' % self.name
+
+        for enum in self.enums:
+            result += indent(str(enum), INDENT_AMOUNT) + '\n\n'
+
+        for message in self.messages:
+            result += indent(str(message), INDENT_AMOUNT) + '\n\n'
 
         if not self.ordered_fields:
             # Empty structs are not allowed in C standard.
@@ -537,20 +541,12 @@ class Message:
         if self.packed:
             result += ' pb_packed'
         
-        result += ' %s;' % self.name
+        result += ';'
         
         if self.packed:
             result = 'PB_PACKED_STRUCT_START\n' + result
             result += '\nPB_PACKED_STRUCT_END'
         
-        return result
-    
-    def types(self):
-        result = ""
-        for field in self.fields:
-            types = field.types()
-            if types is not None:
-                result += types + '\n'
         return result
     
     def default_decl(self, declaration_only = False):
@@ -562,7 +558,10 @@ class Message:
         return result
 
     def fields_declaration(self):
-        result = 'extern const pb_field_t %s_fields[%d];' % (self.name, len(self.fields) + 1)
+        result = ''
+        for msg in self.messages:
+            result += msg.fields_declaration() + '\n'
+        result += 'extern const pb_field_t %s_fields[%d];' % (self.name, len(self.fields) + 1)
         return result
 
     def fields_definition(self):
@@ -637,10 +636,11 @@ def parse_file(fdesc, file_options):
         enum_options = get_nanopb_suboptions(enum, file_options, base_name + enum.name)
         enums.append(Enum(enum, enum_options))
     
-    for names, message in iterate_messages(fdesc, base_name):
+    for message in fdesc.message_type:
+        names = base_name + message.name
         message_options = get_nanopb_suboptions(message, file_options, names)
         messages.append(Message(names, message, message_options))
-    
+
     for names, extension in iterate_extensions(fdesc, base_name):
         field_options = get_nanopb_suboptions(extension, file_options, names)
         if field_options.type != nanopb_pb2.FT_IGNORE:
@@ -716,56 +716,61 @@ def generate_header(dependencies, headername, enums, messages, extensions,
         yield options.genformat % (noext + '.' + options.extension + '.h')
         yield '\n'
 
-    for name in namespaces:
+    for name in namespaces[:-1]:
         yield 'namespace %s {\n' % name
+
+    yield '\n'
+
+    yield 'struct %s {\n' % namespaces[-1]
     
-    yield '/* Enum definitions */\n'
+    yield '    /* Enum definitions */\n'
+    yield '\n'
     for enum in enums:
-        yield str(enum) + '\n\n'
+        yield indent(str(enum), INDENT_AMOUNT) + '\n\n'
     
-    for name in namespaces:
+    yield '    /* Struct definitions */\n'
+    yield '\n'
+    for msg in sort_dependencies(messages):
+        yield indent(str(msg), INDENT_AMOUNT) + '\n\n'
+    
+    yield '}; // struct %s\n' % namespaces[-1]
+    yield '\n'
+    for name in namespaces[-2::-1]:
         yield '} // namespace %s\n' % name
+    yield '\n'
     
-    yield '/* Struct definitions */\n'
-    for msg in sort_dependencies(messages):
-        yield msg.types()
-        yield str(msg) + '\n\n'
-    
-    if extensions:
-        yield '/* Extensions */\n'
-        for extension in extensions:
-            yield extension.extension_decl()
-        yield '\n'
+    #if extensions:
+    #    yield '/* Extensions */\n'
+    #    for extension in extensions:
+    #        yield extension.extension_decl()
+    #    yield '\n'
         
-    yield '/* Default values for struct fields */\n'
-    for msg in messages:
-        yield msg.default_decl(True)
-    yield '\n'
+    #yield '/* Default values for struct fields */\n'
+    #for msg in messages:
+    #    yield msg.default_decl(True)
+    #yield '\n'
     
-    yield '/* Field tags (for use in manual encoding/decoding) */\n'
-    for msg in sort_dependencies(messages):
-        for field in msg.fields:
-            yield field.tags()
-    for extension in extensions:
-        yield extension.tags()
-    yield '\n'
+    #yield '/* Field tags (for use in manual encoding/decoding) */\n'
+    #for msg in sort_dependencies(messages):
+    #    for field in msg.fields:
+    #        yield field.tags()
+    #for extension in extensions:
+    #    yield extension.tags()
+    #yield '\n'
     
+    # TODO put all this in a namespace nanopb::fields
     yield '/* Struct field encoding specification for nanopb */\n'
     for msg in messages:
         yield msg.fields_declaration() + '\n'
     yield '\n'
     
-    yield '/* Maximum encoded size of messages (where known) */\n'
-    for msg in messages:
-        msize = msg.encoded_size(messages)
-        if msize is not None:
-            identifier = '%s_size' % msg.name
-            yield '#define %-40s %s\n' % (identifier, msize)
-    yield '\n'
-    
-    yield '#ifdef __cplusplus\n'
-    yield '} /* extern "C" */\n'
-    yield '#endif\n'
+    #yield '/* Maximum encoded size of messages (where known) */\n'
+    #for msg in messages:
+    #    msize = msg.encoded_size(messages)
+    #    if msize is not None:
+    #        identifier = '%s_size' % msg.name
+    #        yield '#define %-40s %s\n' % (identifier, msize)
+    #yield '\n'
     
     # End of header
     yield '\n#endif\n'
